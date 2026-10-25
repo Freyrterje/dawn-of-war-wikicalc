@@ -1,0 +1,23 @@
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { mkdirSync, writeFileSync, readFileSync, renameSync } from 'node:fs';
+import { extractGame, DEFAULT_GAME } from '../lib/extract.mjs';
+import { normalizeDataset } from '../lib/normalize.mjs';
+import { openDatabase, replaceDataset } from '../lib/database.mjs';
+
+const root = fileURLToPath(new URL('..', import.meta.url));
+const game = process.argv.find(a=>a.startsWith('--game='))?.slice(7) ?? DEFAULT_GAME;
+const rawPath = resolve(root,'data/generated/raw.json');
+const raw = process.argv.includes('--cached') ? JSON.parse(readFileSync(rawPath,'utf8')) : extractGame(game);
+mkdirSync(dirname(rawPath),{recursive:true});
+if (!process.argv.includes('--cached')) writeFileSync(rawPath,JSON.stringify(raw));
+console.log(`Read ${raw.records.length} source records. Normalizing…`);
+const dataset = normalizeDataset(raw);
+const stagedPath = resolve(root,`data/wikicalc-${process.pid}.sqlite`);
+const db = openDatabase(stagedPath);
+replaceDataset(db,dataset);
+db.close();
+renameSync(stagedPath,resolve(root,'data/wikicalc.sqlite'));
+writeFileSync(resolve(root,'data/import-report.json'),JSON.stringify(dataset.metadata,null,2));
+console.log(`Imported ${dataset.entries.length} wiki entries across ${dataset.metadata.counts.factions} factions.`);
+console.log(`Dataset: ${dataset.metadata.datasetId}`);

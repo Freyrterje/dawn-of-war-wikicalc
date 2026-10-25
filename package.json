@@ -1,0 +1,13 @@
+{
+  "name": "dawn-of-war-wikicalc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=24.0.0"},
+  "scripts": {
+    "start": "node server.mjs",
+    "import": "node scripts/import.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node scripts/check.mjs"
+  }
+}
