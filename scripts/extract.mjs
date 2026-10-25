@@ -1,0 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {extractGame,DEFAULT_GAME} from '../lib/extract.mjs';
+const game=process.argv[2]||DEFAULT_GAME;
+const output=path.resolve(process.argv[3]||'data/generated/raw.json');
+const gameRoot=path.resolve(game).toLowerCase()+path.sep;
+if(output.toLowerCase().startsWith(gameRoot))throw Error('Output must not be inside the read-only game installation');
+const data=extractGame(game);fs.mkdirSync(path.dirname(output),{recursive:true});fs.writeFileSync(output,JSON.stringify(data));
+console.log(`Extracted ${data.records.length} RGD records and ${Object.keys(data.strings).length} English strings. Dataset ${data.metadata.datasetId}`);
+console.log(`Saved ${output}`);
