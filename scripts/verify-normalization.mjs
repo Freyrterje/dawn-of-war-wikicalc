@@ -4,18 +4,12 @@ import {normalizeDataset,refId} from '../lib/normalize.mjs';
 const raw=JSON.parse(fs.readFileSync('data/generated/raw.json','utf8'));
 const byId=new Map(raw.records.map(r=>[r.id,r]));
 const races=['space_marines','chaos','eldar','orks','guard','tau','necrons','dark_eldar','sisters'];
+const normalized=normalizeDataset(raw);
 const samples=[];
-for(const race of races){
- const squads=raw.records.filter(r=>r.id.startsWith(`attrib/sbps/races/${race}/`)&&!/_sp|_hg|_nis|_advance|_veteran|_stronghold/.test(r.id));
- const infantry=squads.find(r=>/infantry|commander/.test(byId.get(refId(r.data.squad_loadout_ext?.trooper_base?.type))?.data.type_ext?.type_armour?.$REF||''));
- const vehicle=squads.find(r=>r.data.squad_cap_ext?.support_cap_usage>0&&r.data.squad_loadout_ext?.trooper_base?.type);
- const building=raw.records.find(r=>r.id.startsWith(`attrib/ebps/races/${race}/structures/`)&&r.data.health_ext?.hitpoints>0&&!/_sp|_hg|_nis/.test(r.id));
- for(const [category,r] of [['Infantry',infantry],['Vehicles',vehicle],['Buildings',building]]){assert.ok(r,`${race} ${category}`);samples.push({race,category,record:r});}
+for(const race of races)for(const category of ['Infantry','Vehicles','Buildings']){
+ const entry=normalized.entries.find(e=>e.multiplayer&&e.category===category&&e.id.includes('/races/'+race+'/'));
+ assert.ok(entry, race+' '+category);samples.push({race,category,record:byId.get(entry.id)});
 }
-const keep=new Set(samples.map(s=>s.record.id));
-for(const {record}of samples){const id=refId(record.data.squad_loadout_ext?.trooper_base?.type);if(id)keep.add(id);}
-for(const id of [...keep]){const d=byId.get(id)?.data;for(const hp of Object.values(d?.combat_ext?.hardpoints||{}))for(const w of Object.values(hp?.weapon_table||{})){if(w?.weapon)keep.add(refId(w.weapon));}}
-const normalized=normalizeDataset({...raw,records:raw.records.filter(r=>keep.has(r.id))});
 const reports=[];
 for(const sample of samples){
  const e=normalized.entries.find(e=>e.id===sample.record.id);assert.ok(e,e?.id);const d=byId.get(e.entityId).data;

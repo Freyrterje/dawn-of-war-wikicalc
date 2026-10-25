@@ -5,6 +5,7 @@ const get = async path => {
 };
 const entries = await get('/api/entries');
 assert.equal(new Set(entries.map(e=>e.faction)).size,9);
+assert(entries.every(e=>e.multiplayer===true),'Only multiplayer entries are listed');
 for(const faction of new Set(entries.map(e=>e.faction))) for(const category of ['Infantry','Vehicles','Buildings']) assert(entries.some(e=>e.faction===faction&&e.category===category),`${faction} ${category}`);
 const marine = entries.find(e=>e.id.endsWith('/space_marine_squad_tactical.rgd'));
 const guard = entries.find(e=>e.id.endsWith('/guard_squad_guardsmen.rgd'));
@@ -25,6 +26,12 @@ assert(result.body.left.initialDps>0&&result.body.right.initialDps>0);
 assert(result.body.time>0);
 const invalid = await calculate({left:[{id:marine.id,count:0}],right:[selection(guard.id)]});
 assert.equal(invalid.status,400);
+const building = entries.find(e=>e.category==='Buildings');
+assert.equal((await calculate({left:[selection(building.id)],right:[selection(marine.id)]})).status,400);
+const reapers = entries.filter(e=>e.category==='Infantry'&&e.name==='Dark Reaper Squad');
+assert.equal(reapers.length,1,'Only one multiplayer Dark Reaper Squad');
+assert(!entries.some(e=>/reaper.*exarch|exarch.*reaper/i.test(e.name)),'Exarch is not a standalone selectable squad');
+assert.equal((await fetch(base+'/api/entry?id='+encodeURIComponent('attrib/sbps/races/eldar/eldar_squad_dark_reaper_base.rgd'))).status,404);
 const slot = detail.weapons.find(w=>!w.default&&w.name==='Heavy Bolter');
 if(slot) {
   const loadout = await calculate({left:[{id:marine.id,count:1,weaponChoices:{[slot.slot]:{id:slot.id,count:2}}}],right:[selection(guard.id)],options:{range:20}});
@@ -36,7 +43,18 @@ if(slot) {
   assert(capacity,'Source-derived capacity research is available');
   const upgraded = await calculate({left:[{id:marine.id,count:1,researchIds:[capacity.id],weaponChoices:{[slot.slot]:{id:slot.id,count:4}}}],right:[selection(guard.id)]});
   assert.equal(upgraded.status,200,JSON.stringify(upgraded.body));
+  const lost = await calculate({left:[selection(marine.id),selection(marine.id)],right:[{id:marine.id,count:10}],research:{left:[capacity.id]},options:{range:20}});
+  assert.equal(lost.status,200,JSON.stringify(lost.body));
+  assert.equal(lost.body.left.researchCost.power,capacity.cost.power,'Global research is purchased once for both squads');
+  assert.equal(lost.body.left.losses.power,0,'Research never becomes power lost on zero-power Marines');
+  assert.equal(lost.body.left.remainingModels,0);
 }
+const reaperDetail = await get('/api/entry?id='+encodeURIComponent(reapers[0].id));
+assert(reaperDetail.leaders?.length,'Dark Reapers expose a squad leader');
+const leader = reaperDetail.leaders.find(l=>/exarch/i.test(l.name));
+assert(leader?.hp>0&&leader.weapons?.length,'Exarch has its own health and weapons');
+const withLeader = await calculate({left:[{id:reapers[0].id,count:1,leaders:[{id:leader.id,count:1}]}],right:[selection(marine.id)]});
+assert.equal(withLeader.status,200,JSON.stringify(withLeader.body));
 const melee = await calculate({left:[selection(marine.id)],right:[selection(marine.id)],options:{mode:'melee',range:0}});
 assert.equal(melee.status,200,JSON.stringify(melee.body));
 assert.equal(melee.body.status,'mutual destruction');

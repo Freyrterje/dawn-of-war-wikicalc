@@ -40,3 +40,16 @@ test('combat validates research prerequisite selection and applies prerequisite 
   const result=simulateTrade({left:[{unit,upgrades:['b','a']}],right:[{unit}]},{maxTime:1});
   assert.equal(result.left.initialHp,220);
 });
+
+test('research includes leader-specific health and weapons without changing troopers',()=>{
+  const e=entry();e.leaders=[{id:'leader-slot',entityId:'attrib/ebps/races/test/exarch.rgd',weapons:[{id:'attrib/weapon/exarch_gun.rgd'}]}];
+  attachResearch([e],{records:[research('leader_upgrade',{modifier_01:mod('health_maximum_modifier','exarch'),modifier_02:mod('max_damage_weapon_modifier','exarch_gun','weapon_type')})]},[]);
+  assert.equal(e.upgrades[0].supported,true);
+  assert.deepEqual(e.upgrades[0].modifiers.map(m=>m.leaderId),['leader-slot','leader-slot']);
+});
+
+test('research absent from multiplayer production is excluded',()=>{
+  const e=entry(),r=research('campaign',{modifier_01:mod('health_maximum_modifier')});
+  attachResearch([e],{records:[r],multiplayerResearchIds:[]},[]);
+  assert.equal(e.upgrades.length,0);
+});

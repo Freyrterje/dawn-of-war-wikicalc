@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { resolve, extname } from 'node:path';
 import { openDatabase, readMetadata, readEntry } from './lib/database.mjs';
 import { simulateTrade } from './lib/combat.mjs';
+import { playerView } from './lib/player-view.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const databasePath = resolve(root, 'data/wikicalc.sqlite');
@@ -12,6 +13,10 @@ if (!existsSync(databasePath)) {
   process.exit(1);
 }
 const db = openDatabase(databasePath);
+const catalogue = db.prepare('SELECT summary FROM entries').all().map(r=>JSON.parse(r.summary)).filter(e=>e.multiplayer===true);
+const playableIds = new Set(catalogue.map(e=>e.id));
+const combatIds = new Set(catalogue.filter(e=>['Infantry','Vehicles'].includes(e.category)).map(e=>e.id));
+const allowedRelation = r => !['ebps','sbps'].includes(r.kind) || playableIds.has(r.id);
 const send = (res, code, value) => {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(value));
@@ -26,12 +31,17 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     if (req.method === 'GET' && url.pathname === '/api/meta') return send(res, 200, readMetadata(db));
     if (req.method === 'GET' && url.pathname === '/api/entries') {
-      const entries = db.prepare('SELECT summary FROM entries ORDER BY faction,category,name').all().map(r => JSON.parse(r.summary));
+      const entries = catalogue.toSorted((a,b)=>(a.factionOrder??99)-(b.factionOrder??99)||(a.order??999)-(b.order??999));
       return send(res, 200, entries);
     }
     if (req.method === 'GET' && url.pathname === '/api/entry') {
       const entry = readEntry(db, url.searchParams.get('id'));
-      return send(res, entry ? 200 : 404, entry ?? { error: 'Entry not found.' });
+      if(entry && ['ebps','sbps'].includes(entry.kind) && !playableIds.has(entry.id)) return send(res,404,{error:'This unit is not available in the multiplayer roster.'});
+      if(entry) {
+        entry.relations = entry.relations.filter(allowedRelation);
+        entry.referencedBy = entry.referencedBy.filter(allowedRelation);
+      }
+      return send(res, entry ? 200 : 404, entry ? playerView(entry,id=>db.prepare('SELECT name FROM records WHERE id=?').get(id)?.name) : { error: 'Entry not found.' });
     }
     if (req.method === 'POST' && url.pathname === '/api/calculate') {
       if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) return send(res, 403, {error:'Cross-origin requests are not allowed.'});
@@ -44,12 +54,13 @@ const server = http.createServer(async (req, res) => {
       const side = rows => {
         if (!Array.isArray(rows) || rows.length < 1 || rows.length > 12) throw new Error('Choose 1–12 groups on each side.');
         return rows.map(row => {
+          if(!combatIds.has(row.id)) throw new Error('Choose a multiplayer infantry unit or vehicle. Buildings and campaign units cannot enter a trade.');
           const unit = readEntry(db, row.id);
-          if (!unit || !unit.calculable) throw new Error(`${unit?.name ?? 'Entry'} is not supported by the combat model. See its data notes.`);
-          return { unit, count: Number(row.count ?? 1), squadSize: Number(row.size ?? unit.squadMin ?? 1), weaponChoices: row.weaponChoices, upgrades: row.researchIds ?? row.upgrades ?? [] };
+          if (!unit || !unit.calculable) throw new Error(`${unit?.name ?? 'Unit'} cannot be used in this combat estimate.`);
+          return { unit, count: Number(row.count ?? 1), squadSize: Number(row.size ?? unit.squadMin ?? 1), weaponChoices: row.weaponChoices, leaders:row.leaders ?? [], upgrades: row.researchIds ?? row.upgrades ?? [] };
         });
       };
-      const result = simulateTrade({left:side(input.left),right:side(input.right)}, input.options ?? {});
+      const result = simulateTrade({left:side(input.left),right:side(input.right),research:input.research}, input.options ?? {});
       return send(res, 200, result);
     }
     if (req.method === 'GET' && staticFiles.has(url.pathname)) {

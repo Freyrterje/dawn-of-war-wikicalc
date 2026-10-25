@@ -1,53 +1,63 @@
 # Combat model
 
-`lib/combat.mjs` exports `weaponDps`, `expectedHitDamage`, `applyModifiers`, and `simulateTrade`. The calculator is a deterministic expected-damage attrition experiment, not a reproduction of the game engine. Its visible assumptions travel with every result.
+The trade calculator compares multiplayer infantry and vehicles. It estimates expected damage and casualties; it does not reproduce every event in the game engine.
+
+## Forces, squads and leaders
+
+Each row describes one or more squads of the same type. The squad size is its number of regular troopers; purchased squad leaders are additional models, subject to the squad's leader limit. Every model has its own health, armour, regeneration, weapons and purchase cost. A Dark Reaper Exarch therefore contributes its own health and weapon damage, rather than being represented as another ordinary Dark Reaper.
+
+Supported leader bonuses apply only while their owner is alive and only to their stated recipients. For example, the Dark Reaper Exarch's damage bonus applies to the squad troopers and excludes the leader where the game ability specifies that. Bonuses disappear when the owner dies. Unsupported leader mechanics are identified and excluded rather than silently approximated.
+
+Both forces focus the first surviving squad in row order. Within each squad, ordinary troopers are targeted first, then troopers carrying purchased weapons, then leaders. This is a deliberate, visible casualty-order assumption: it is not a claim about targeting or attachment position in a match. The next squad is targeted after the current squad is eliminated.
+
+## Global research and resource losses
+
+Building research is global to its force. Selecting a research once applies its relevant effects to every eligible squad and selected leader in that force, and its cost is charged exactly once. The other force has its own independent research purchases. Research remains after units die and is **never included in losses**.
+
+Results separate:
+
+- **Army cost:** purchased troopers, squad weapons and leaders.
+- **Global research:** one-time purchases retained after the engagement.
+- **Total investment:** army cost plus global research.
+- **Resources lost:** purchase cost of the models actually killed, including any purchased weapons they carried.
+
+Initial squad cost is divided among its starting troopers. Extra troopers use their reinforcement price. Leaders retain their own purchase price. Purchased weapons are assigned to individual carriers and lost only when those carriers die. A squad with no power cost cannot lose power merely because global research was purchased. Missing costs remain unavailable rather than becoming zero.
+
+Research prerequisites and mutual exclusions are checked, and prerequisite effects are applied first. Building and technology infrastructure is assumed available. Unsupported relevant effects disable a research for that force; upgrades unavailable through multiplayer production are not offered.
 
 ## Damage calculation
 
-The archived [Relic Developer Network armour explanation](https://dow.finaldeath.co.uk/rdnwiki/www.relic.com/rdn/wiki/DOWAttributeEditor/ArmorAndDamageExplanation&show_comments=1.html) describes numeric armour, minimum armour, and per-type armour penetration. The model uses:
+The archived [Relic Developer Network armour explanation](https://dow.finaldeath.co.uk/rdnwiki/www.relic.com/rdn/wiki/DOWAttributeEditor/ArmorAndDamageExplanation&show_comments=1.html) describes numeric armour, minimum armour and armour-class piercing. The calculation is:
 
 ```
-penetration = matching per-armour-type value, otherwise weapon default
-multiplier = clamp(min(100 - target armour + penetration,
-                       100 - target minimum armour) / 100, 0, 1)
-expected DPS = accuracy * E[max(minimum damage, damage * multiplier)] / reload
+penetration = matching armour-class value, otherwise weapon default
+multiplier = clamp(min(100 - armour + penetration,
+                       100 - minimum armour) / 100, 0, 1)
+expected DPS = accuracy * E[max(damage floor, damage * multiplier)] / reload
 ```
 
-The damage floor applies after armour. We integrate uniformly distributed damage between the extracted minimum and maximum; when the floor crosses that interval, flooring only its mean would understate the expectation. The random distribution and reload-only timing are explicit modeling assumptions. Fixed range gates ranged weapons. Melee requires separation zero and assumes contact; it does not require ranged-distance fields, which are absent on many melee blueprints. Ranged and melee weapons never fire together in one experiment.
+Damage is treated as uniformly distributed between the weapon's minimum and maximum. The minimum-damage floor is applied after armour for each value in that interval, rather than after averaging. Actual zero penetration stays zero. The damage floor may still allow damage.
 
-Local checks found the tactical Marine's `health_ext.armour = 100`, `armour_minimum = 0`, and `type_ext.type_armour.$REF = type_armour\\tp_infantry_heavy_med.lua`. Numeric armour is not inferred from the armour-type name. Zero penetration remains a real zero; the minimum-damage floor can still produce damage.
+Only one chosen weapon per hardpoint fires, and ranged/melee weapons never fire simultaneously. Optional weapon quantities replace the baseline weapon on that many troopers per squad and obey the shared upgrade cap. Ranged attacks require the fixed separation to lie within the weapon's range. Melee requires separation zero and assumes every model can engage; melee weapons do not require ranged-distance fields. Air/ground target permissions are respected. Linked weapon slave-group timing is unsupported and rejects the estimate.
 
-## Attrition and targeting
+## Time and exclusions
 
-Both sides deal damage simultaneously in steps of 0.05 seconds, preventing a first-side advantage. Every surviving model contributes its currently selected hardpoints. All groups focus the first surviving enemy group; damage concentrates on one model, spilling through models in that group. Model deaths reduce subsequent firepower. Excess damage within a step is not transferred to another group. This is a deliberately simple focus-fire policy; it does not predict human target selection.
+Damage is simultaneous in steps no longer than 0.05 seconds, shortened to the next death event on either side. This prevents an arbitrary kill-rate cap and allows the next target to use its own armour immediately. Neither side receives a first-turn advantage, and every surviving model contributes its current weapons. High-damage and ordinary engagements are checked for step-size convergence. In-combat regeneration is applied and capped at each model’s maximum health.
 
-Regeneration is applied to each wounded surviving front model and capped at its health. The normalized source in-combat reduction is subtracted where available; additional conditional suppression, resurrection, and healing abilities are not modeled. Morale remains unbroken; its damage, regeneration, death penalties and broken-state accuracy are not simulated. See returned assumptions for all exclusions, including setup time, movement, cover, abilities, projectiles, bursts, special attacks, splash victims and transport contents. Melee assumes every model is engaged. Area weapons describe only one primary target. Extracted air/ground target permissions gate damage. Nonzero weapon slave groups reject the estimate because their linked firing timing is not modeled.
+Morale remains unbroken. Movement, cover, activated abilities, splash victims, setup/burst/animation timing, projectile travel, sync kills, resurrection, reinforcement and transport occupants are excluded. Supported leader bonuses are the exception to ability exclusion. Supported health auras start models at full modified health. When an aura ends, health is clamped to the new maximum without healing; this is an explicit model assumption. These assumptions are returned with every result.
 
-Each hardpoint has one baseline weapon. An optional choice `{id, count}` replaces it on `count` models per squad, bounded by `unit.weaponUpgradeMax`. Unknown caps reject optional choices. Base-weapon models die first in this experiment, retaining upgraded weapons until too few models survive; different hardpoints are evaluated independently. This is an explicit casualty allocation policy, not a claim about the engine. Source requirements are shown in the wiki; the calculator does not simulate the technology tree.
+No in-engine replay comparison has been performed. The tests establish mathematical correctness and source-backed selection, not agreement with an actual match.
 
-## API and missing data
+## Developer API
 
-```
+```js
 simulateTrade({
-  left: [{unit, count: 1, squadSize: 4,
-          weaponChoices: {hardpoint_01: {id: 'weapon-id', count: 1}},
-          upgrades: ['research-id']}],
-  right: [{unit, count: 1, squadSize: 4}]
-}, {mode: 'ranged', range: 20, step: 0.05, maxTime: 600})
+  left: [{ unit, count: 2, squadSize: 4,
+           weaponChoices: { hardpoint_01: { id: 'weapon-id', count: 1 } },
+           leaders: [{ id: 'leader-id', count: 1 }] }],
+  right: [{ unit: opponent, count: 1, squadSize: 6 }],
+  research: { left: ['research-id'], right: [] }
+}, { mode: 'ranged', range: 20, step: 0.05, maxTime: 600 });
 ```
 
-Units supply `hp`, `regen`, `armor` (type key), `armourValue`, `armourMinimum`, `squadMin`, `squadMax`, `weapons`, starting-squad `cost`, and per-added-model `reinforceCost`. Weapon fields: `id`, `slot`, `default`, `melee`, `accuracy`, `minDamage`, `maxDamage`, `minDamageValue`, `reload`, `minRange`, `maxRange`, `armourPiercing`, and `armourPiercingTypes` keyed exactly like `unit.armor`. Optional weapon costs describe one purchased replacement.
-
-Missing combat inputs fail visibly instead of becoming zero. Missing costs yield `null` totals. Zero-cost units remain valid. No enemy damage means a time-limit result rather than an invented kill time. Start DPS is against the first opposing group and is labeled separately from the attrition outcome.
-
-Results include `status`, elapsed `time`, `left` and `right` summaries, and health/model `history`. Each side has `initialDps`, `initialHp`, `initialModels`, `remainingHp`, `remainingModels`, purchase `cost`, allocated `losses`, and per-group survivors. Resource losses allocate known purchase costs in proportion to model casualties; they are neither refunds nor exact reinforcement bills. Costs include requested extra models, selected weapon purchases, and selected research. A research selected on multiple groups is charged on each group; do not interpret that as a whole-army build-order optimizer.
-
-## Research modifiers
-
-Only normalized upgrades explicitly marked `supported: true` may be applied. Their `modifiers` contain `{field, operation, value, weaponId?}`; operations are `multiply`, `add`, and `set`. Unit fields supported are `hp`, `regen`, `armourValue`, and `armourMinimum`; exact squad-targeted capacity modifiers support `weaponUpgradeMax`. Weapon fields include `accuracy`, `minDamage`, `maxDamage`, `minDamageValue`, `reload`, and `maxRange`, and require the exact `weaponId`. Unknown fields or unavailable weapons fail closed.
-
-`lib/research.mjs` matches source `target_type_name` to the exact entity, squad, or weapon basename, requires the corresponding application type, and retains source modifier paths. Any relevant unsupported effect disables the entire research for that entry. Effects targeting other entries do not invalidate this entry's estimate. Only probability-one, nonexclusive modifiers with known usage semantics are admitted. Research prerequisites are attached recursively and must be selected; they are applied in prerequisite order regardless of checkbox order. Negative research requirements enforce mutual exclusion. Unknown requirement types disable research. Infrastructure prerequisites, including buildings and global add-ons, are assumed satisfied and shown as source requirements; the calculator does not reproduce the technology tree or build order. Global upgrades selected for multiple groups are charged for each group as disclosed above.
-
-## Verification
-
-Run `node --test tests/combat.test.mjs`. Synthetic fixtures test armour overrides, numeric armour, the damage floor integral, range/mode gating, missing data, simultaneous mutual destruction, casualty-dependent DPS, regeneration stalemates, weapon choice caps, partial loadouts, modifier isolation, unknown costs, and step-size convergence. Synthetic numbers exist only in tests. These checks validate the specified mathematical model; they do not claim agreement with recorded engine combat.
+`lib/combat.mjs` contains damage mathematics and modifier application; `lib/combat-engine.mjs` contains force construction and per-model attrition. Leader choices provide complete normalized model profiles and scoped modifiers. `lib/research.mjs` maps exact multiplayer entity, squad and weapon targets, including leader-specific effects. Tests use explicitly synthetic fixtures and never provide application game statistics.

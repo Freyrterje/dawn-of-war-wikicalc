@@ -92,3 +92,78 @@ test('group selection and numerical convergence', () => {
   assert.ok(Math.abs(coarse.time-fine.time)<0.1);
   assert.equal(coarse.right.remainingModels,0);
 });
+
+test('global research is purchased once, applies force-wide, and is never lost',()=>{
+  const research={id:'global-armour',name:'Global armour',supported:true,modifiers:[{field:'hp',operation:'multiply',value:2}],cost:{requisition:100,power:50}};
+  const upgraded={...structuredClone(unit),upgrades:[research]};
+  const result=simulateTrade({left:[{unit:upgraded,count:2},{unit:upgraded,count:1}],right:[entry({hp:10000,weapons:[{...gun,minDamage:1000,maxDamage:1000}]})],research:{left:[research.id]}});
+  assert.equal(result.left.initialHp,600);
+  assert.deepEqual(result.left.researchCost,{requisition:100,power:50});
+  assert.deepEqual(result.left.armyCost,{requisition:150,power:0});
+  assert.deepEqual(result.left.cost,{requisition:250,power:50});
+  assert.deepEqual(result.left.losses,{requisition:150,power:0});
+});
+
+test('research selected for one group applies to other eligible types with their scoped effects',()=>{
+  const a={id:'global',supported:true,modifiers:[{field:'hp',operation:'multiply',value:2}],cost:{requisition:10,power:5}};
+  const b={...a,modifiers:[{field:'hp',operation:'add',value:50}]};
+  const result=simulateTrade({left:[entry({id:'first',upgrades:[a]},{upgrades:['global']}),entry({id:'second',upgrades:[b]})],right:[entry({weapons:[]})]},{maxTime:1});
+  assert.equal(result.left.initialHp,350);
+  assert.equal(result.left.researchCost.power,5);
+  assert.equal(result.left.losses.power,0);
+});
+
+test('a squad weapon is lost only when its carrier dies',()=>{
+  const heavy={...gun,id:'heavy',minDamage:20,maxDamage:20,cost:{requisition:20,power:10}};
+  const left=entry({weapons:[gun,heavy],weaponUpgradeMax:1},{squadSize:3,weaponChoices:{primary:{id:'heavy',count:1}}});
+  const right=entry({hp:10000,weapons:[{...gun,minDamage:100,maxDamage:100}]});
+  const partial=simulateTrade({left:[left],right:[right]},{maxTime:1});
+  assert.equal(partial.left.remainingModels,2);
+  assert.deepEqual(partial.left.losses,{requisition:50,power:0});
+  const dead=simulateTrade({left:[left],right:[right]},{maxTime:4});
+  assert.deepEqual(dead.left.losses,{requisition:170,power:10});
+});
+
+test('leaders add their own health, weapons and cost; their bonus can exclude themselves',()=>{
+  const leader={...structuredClone(unit),id:'leader',name:'Leader',hp:200,weapons:[{...gun,id:'leader-gun',minDamage:30,maxDamage:30}],maxCount:1,cost:{requisition:75,power:25},modifiers:[{field:'minDamage',operation:'multiply',value:1.15,target:'troopers'},{field:'maxDamage',operation:'multiply',value:1.15,target:'troopers'}]};
+  const result=simulateTrade({left:[entry({leaders:[leader],maxLeaders:1},{leaders:[{id:'leader',count:1}]})],right:[entry({hp:10000,weapons:[{...gun,minDamage:1000,maxDamage:1000}]})]});
+  assert.equal(result.left.initialHp,300);
+  assert.equal(result.left.initialModels,2);
+  assert.equal(result.left.initialDps,41.5);
+  assert.deepEqual(result.left.losses,{requisition:125,power:25});
+  assert.equal(result.left.groups[0].initialLeaders,1);
+  assert.equal(result.left.groups[0].remainingLeaders,0);
+});
+
+test('leader aura disappears immediately after its owner dies',()=>{
+  const source={...structuredClone(unit),id:'aura',hp:10,weapons:[],maxCount:1,cost:{requisition:10,power:0},modifiers:[{field:'minDamage',operation:'multiply',value:2,target:'squad'},{field:'maxDamage',operation:'multiply',value:2,target:'squad'}]};
+  const fighter={...structuredClone(unit),id:'fighter',hp:100,maxCount:1,cost:{requisition:10,power:0},modifiers:[]};
+  const result=simulateTrade({left:[entry({hp:10,weapons:[],leaders:[source,fighter],maxLeaders:2},{leaders:['aura','fighter']})],right:[entry({hp:1000})]},{maxTime:3});
+  assert.equal(result.left.groups[0].remainingLeaders,1);
+  assert.ok(Math.abs(result.right.remainingHp-950)<1e-6);
+});
+
+test('leader count caps and buildings are rejected by the combat model',()=>{
+  const leader={...structuredClone(unit),id:'leader',maxCount:1,modifiers:[]};
+  assert.throws(()=>simulateTrade({left:[entry({leaders:[leader],maxLeaders:0},{leaders:['leader']})],right:[entry()]}),/leader limit/);
+  assert.throws(()=>simulateTrade({left:[entry({category:'Buildings'})],right:[entry()]}),/infantry and vehicles/);
+});
+
+test('death events avoid a time-step kill-rate cap and switch target armour',()=>{
+  const attacker=entry({hp:10000,weapons:[{...gun,minDamage:10000,maxDamage:10000}]});
+  const defenders=[entry({hp:1,weapons:[]},{squadSize:10}),entry({hp:100,weapons:[],armourMinimum:90})];
+  const coarse=simulateTrade({left:[attacker],right:defenders},{step:0.25});
+  const fine=simulateTrade({left:[attacker],right:defenders},{step:0.005});
+  assert.equal(coarse.status,'left wins');
+  assert.ok(Math.abs(coarse.time-0.101)<1e-9);
+  assert.ok(Math.abs(coarse.time-fine.time)<1e-9);
+});
+
+test('leader health aura starts full and does not heal survivors when lost',()=>{
+  const source={...structuredClone(unit),id:'health-aura',hp:10,weapons:[],maxCount:1,cost:{requisition:10,power:0},modifiers:[{field:'hp',operation:'add',value:100,target:'squad'}]};
+  const fighter={...structuredClone(unit),id:'survivor',hp:100,weapons:[],maxCount:1,cost:{requisition:10,power:0},modifiers:[]};
+  const result=simulateTrade({left:[entry({hp:10,weapons:[],leaders:[source,fighter],maxLeaders:2},{leaders:['health-aura','survivor']})],right:[entry({hp:10000,weapons:[{...gun,minDamage:100,maxDamage:100}]})]},{maxTime:3});
+  assert.equal(result.left.initialHp,420);
+  assert.equal(result.left.remainingModels,1);
+  assert.ok(Math.abs(result.left.remainingHp-20)<1e-6);
+});
